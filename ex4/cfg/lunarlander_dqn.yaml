@@ -1,6 +1,6 @@
 seed: 436
 exp_name: ex4
-env_name: LunarLander-v2
+env_name: LunarLander-v3
 agent_name: dqn
 run_id: ??? # decided during execution
 
