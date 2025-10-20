@@ -1,1 +1,7 @@
 .venv/
+
+*/feedback/*
+*/feedback/**
+
+**/.ipynb_checkpoints/
+
