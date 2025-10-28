@@ -1,4 +1,5 @@
 .venv/
+project/rl_env/
 
 */feedback/*
 */feedback/**

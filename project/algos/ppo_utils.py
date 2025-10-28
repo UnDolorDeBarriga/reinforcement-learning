@@ -33,7 +33,16 @@ class Policy(torch.nn.Module):
         # You should create two separate networks:
         #   - Actor: outputs mean action (μ)
         #   - Critic: outputs state value V(s)
-        raise NotImplementedError("Define actor and critic networks here.")
+        hidden = hidden_size
+
+        self.fc1_a = torch.nn.Linear(self.state_space, hidden)
+        self.fc2_a = torch.nn.Linear(hidden, hidden)
+        self.mu_head = torch.nn.Linear(hidden, self.action_space)
+
+        # Critic network: maps state → hidden → scalar V(s)
+        self.fc1_c = torch.nn.Linear(self.state_space, hidden)
+        self.fc2_c = torch.nn.Linear(hidden, hidden)
+        self.v_head = torch.nn.Linear(hidden, 1)
         # ===== YOUR CODE ENDS HERE =====
 
         # ===== YOUR CODE STARTS HERE =====
@@ -41,14 +50,19 @@ class Policy(torch.nn.Module):
         # stds = (env.action_space.high - env.action_space.low)
         # self.actor_logstd = np.log(stds)
         # Also store a copy (self.actor_logstd_dist) for later scaling.
-        raise NotImplementedError("Initialize log standard deviation tensors here.")
+        stds = (env.action_space.high - env.action_space.low) / 2.0  # reasonable initial scale
+        stds = np.clip(stds, 1e-3, None)
+
+        # store as torch tensors
+        self.actor_logstd = torch.nn.Parameter(torch.log(torch.tensor(stds, dtype=torch.float32)))
+        self.actor_logstd_dist = self.actor_logstd.clone().detach()
         # ===== YOUR CODE ENDS HERE =====
 
     def set_logstd_ratio(self, ratio):
         """Adjust exploration by scaling the actor's log standard deviation."""
         # ===== YOUR CODE STARTS HERE =====
         # Scale self.actor_logstd by ratio (e.g., self.actor_logstd = self.actor_logstd_dist * ratio)
-        raise NotImplementedError("Implement scaling for actor log standard deviation.")
+        self.actor_logstd.data = self.actor_logstd_dist * ratio
         # ===== YOUR CODE ENDS HERE =====
 
     def init_weights(self):
@@ -57,7 +71,10 @@ class Policy(torch.nn.Module):
         # Iterate over self.modules() and initialize torch.nn.Linear layers:
         #   torch.nn.init.normal_(m.weight, 0, 1e-1)
         #   torch.nn.init.zeros_(m.bias)
-        raise NotImplementedError("Implement weight initialization for linear layers.")
+        for m in self.modules():
+            if isinstance(m, torch.nn.Linear):
+                torch.nn.init.normal_(m.weight, mean=0.0, std=1e-2)
+                torch.nn.init.zeros_(m.bias)
         # ===== YOUR CODE ENDS HERE =====
 
     def forward(self, x):
@@ -77,5 +94,21 @@ class Policy(torch.nn.Module):
         # 3. Compute the action’s log standard deviation (expand to match μ shape).
         # 4. Compute action standard deviation via torch.exp.
         # 5. Create and return an Independent(Normal(mean, std), 1) distribution and the critic value.
-        raise NotImplementedError("Implement actor-critic forward pass and action distribution.")
+        x_a = F.relu(self.fc1_a(x))
+        x_a = F.relu(self.fc2_a(x_a))
+        mu = torch.tanh(self.mu_head(x_a))  # keep mean in [-1, 1] range
+
+        # Critic: compute value V(s)
+        x_c = F.relu(self.fc1_c(x))
+        x_c = F.relu(self.fc2_c(x_c))
+        v = self.v_head(x_c)
+
+        # Expand logstd to same shape as mu
+        log_std = self.actor_logstd.expand_as(mu)
+        std = torch.exp(log_std)
+
+        # Create a multivariate (diagonal) Normal distribution
+        dist = Independent(Normal(mu, std), 1)
+
+        return dist, v
         # ===== YOUR CODE ENDS HERE =====
