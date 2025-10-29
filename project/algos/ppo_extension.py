@@ -73,7 +73,22 @@ class PPOExtension(PPOAgent):
         # 2. Compute δ_t = r_t + γ * V(s_{t+1}) * (1 - done_t) - V(s_t)
         # 3. Compute GAE recursively backwards in time.
         # 4. Return torch.Tensor of reversed returns.
-        raise NotImplementedError("Implement return computation for Dual-Clip PPO.")
+        returns = []
+        with torch.no_grad():
+            _, values = self.policy(self.states)
+            _, next_values = self.policy(self.next_states)
+            values = values.squeeze()
+            next_values = next_values.squeeze()
+
+        T = self.rewards.shape[0]
+        gae = 0.0
+        for t in reversed(range(T)):
+            mask = 1.0 - self.dones[t]
+            delta = self.rewards[t] + self.gamma * next_values[t] * mask - values[t]
+            gae = delta + self.gamma * self.tau * mask * gae
+            returns.append(gae + values[t])
+
+        return torch.Tensor(list(reversed(returns)))
         # ===== YOUR CODE ENDS HERE =====
 
     def ppo_epoch(self):
