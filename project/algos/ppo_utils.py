@@ -33,16 +33,14 @@ class Policy(torch.nn.Module):
         # You should create two separate networks:
         #   - Actor: outputs mean action (μ)
         #   - Critic: outputs state value V(s)
-        hidden = hidden_size
-
-        self.fc1_a = torch.nn.Linear(self.state_space, hidden)
-        self.fc2_a = torch.nn.Linear(hidden, hidden)
-        self.mu_head = torch.nn.Linear(hidden, self.action_space)
+        self.fc1_a = torch.nn.Linear(state_space, hidden_size)
+        self.fc2_a = torch.nn.Linear(hidden_size, hidden_size)
+        self.fc3_a = torch.nn.Linear(hidden_size, action_space)
 
         # Critic network: maps state → hidden → scalar V(s)
-        self.fc1_c = torch.nn.Linear(self.state_space, hidden)
-        self.fc2_c = torch.nn.Linear(hidden, hidden)
-        self.v_head = torch.nn.Linear(hidden, 1)
+        self.fc1_c = torch.nn.Linear(state_space, hidden_size)
+        self.fc2_c = torch.nn.Linear(hidden_size, hidden_size)
+        self.fc3_c = torch.nn.Linear(hidden_size, 1)
         # ===== YOUR CODE ENDS HERE =====
 
         # ===== YOUR CODE STARTS HERE =====
@@ -50,19 +48,19 @@ class Policy(torch.nn.Module):
         # stds = (env.action_space.high - env.action_space.low)
         # self.actor_logstd = np.log(stds)
         # Also store a copy (self.actor_logstd_dist) for later scaling.
-        stds = (env.action_space.high - env.action_space.low) / 2.0  # reasonable initial scale
-        stds = np.clip(stds, 1e-3, None)
+        stds = (env.action_space.high - env.action_space.low)
+        logstd_np = np.log(stds)
 
         # store as torch tensors
-        self.actor_logstd = torch.nn.Parameter(torch.log(torch.tensor(stds, dtype=torch.float32)))
-        self.actor_logstd_dist = self.actor_logstd.clone().detach()
+        self.actor_logstd = torch.tensor(logstd_np, dtype=torch.float32)
+        self.actor_logstd_dist = self.actor_logstd.clone()
         # ===== YOUR CODE ENDS HERE =====
 
     def set_logstd_ratio(self, ratio):
         """Adjust exploration by scaling the actor's log standard deviation."""
         # ===== YOUR CODE STARTS HERE =====
         # Scale self.actor_logstd by ratio (e.g., self.actor_logstd = self.actor_logstd_dist * ratio)
-        self.actor_logstd.data = self.actor_logstd_dist * ratio
+        self.actor_logstd = self.actor_logstd_dist * ratio
         # ===== YOUR CODE ENDS HERE =====
 
     def init_weights(self):
@@ -86,7 +84,7 @@ class Policy(torch.nn.Module):
 
         Outputs:
         - action_dist: a torch.distributions.Independent(Normal) distribution over actions
-        - x_c: critic’s scalar value estimate
+        - x_c: critic's scalar value estimate
         """
         # ===== YOUR CODE STARTS HERE =====
         # 1. Compute the actor forward pass and output the mean action (μ).
@@ -96,12 +94,12 @@ class Policy(torch.nn.Module):
         # 5. Create and return an Independent(Normal(mean, std), 1) distribution and the critic value.
         x_a = F.relu(self.fc1_a(x))
         x_a = F.relu(self.fc2_a(x_a))
-        mu = torch.tanh(self.mu_head(x_a))  # keep mean in [-1, 1] range
+        mu = self.fc3_a(x_a)
 
         # Critic: compute value V(s)
         x_c = F.relu(self.fc1_c(x))
         x_c = F.relu(self.fc2_c(x_c))
-        v = self.v_head(x_c)
+        v = self.fc3_c(x_c)
 
         # Expand logstd to same shape as mu
         log_std = self.actor_logstd.expand_as(mu)
@@ -111,4 +109,3 @@ class Policy(torch.nn.Module):
         dist = Independent(Normal(mu, std), 1)
 
         return dist, v
-        # ===== YOUR CODE ENDS HERE =====

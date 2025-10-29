@@ -30,7 +30,7 @@ class PPOAgent(BaseAgent):
         self.device = self.cfg.device
         self.policy = Policy(self.observation_space_dim, self.action_space_dim, self.env).to(self.device)
         self.lr = self.cfg.lr
-        self.optimizer = torch.optim.Adam(seOplf.policy.parameters(), lr=float(self.lr))
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=float(self.lr))
         self.batch_size = self.cfg.batch_size
         self.gamma = self.cfg.gamma
         self.tau = self.cfg.tau
@@ -78,26 +78,24 @@ class PPOAgent(BaseAgent):
         # Store "gae + value_t" in a list, then reverse it at the end.
         
         # We get the values from the critic for current and next states
+        returns = []
         with torch.no_grad():
-            _, values = self.policy.forward(self.states.to(self.device))
-            _, next_values = self.policy.forward(self.next_states.to(self.device))
-            values = values.squeeze().detach()
-            next_values = next_values.squeeze().detach()
+            _, values = self.policy(self.states)
+            _, next_values = self.policy(self.next_states)
+            values = values.squeeze()
+            next_values = next_values.squeeze()
 
         T = self.rewards.shape[0]
         gae = 0.0
-        returns = []
-
-
         # We compute the GAE in reverse order -> gae = delta + gamma * tau * (1 - done) * gae_next
         # Return is gae + value_t
         for t in reversed(range(T)):
-            mask = 1.0 - self.dones[t].to(self.device)
-            delta = self.rewards[t].to(self.device) + self.gamma * next_values[t] * mask - values[t]
+            mask = 1.0 - self.dones[t]
+            delta = self.rewards[t] + self.gamma * next_values[t] * mask - values[t]
             gae = delta + self.gamma * self.tau * mask * gae
             returns.append(gae + values[t])
-        returns.reverse()
-        return torch.stack(returns).to(self.device)
+
+        return torch.Tensor(list(reversed(returns)))
         # ===== YOUR CODE ENDS HERE =====
 
     def ppo_epoch(self):
@@ -112,29 +110,25 @@ class PPOAgent(BaseAgent):
         # 3. While enough samples remain, draw a minibatch (size self.batch_size)
         # 4. Call self.ppo_update() with the selected minibatch
         # 5. Remove those indices from the pool
-        
-        # Compyute returns
-        target = self.compute_returns()
 
-        states = self.states.to(self.device)
-        actions = self.actions.to(self.device)
-        next_states = self.next_states.to(self.device)
-        dones = self.dones.to(self.device)
-        old_log_probs = self.action_log_probs.to(self.device)
-        N = states.shape[0]
+        # Compute returns
+        returns = self.compute_returns()
+        indices = list(range(len(self.states)))
 
-        perm = torch.randperm(N)
-        start_idx = 0
+        while len(indices) >= self.batch_size:
+            
+            batch_indices = np.random.choice(indices, self.batch_size, replace=False)
 
-        while start_idx < N:
-            end_idx = min(start_idx + self.batch_size, N)
-            idx = perm[start_idx:end_idx]
-
+            # Do Update
             self.ppo_update(
-                states[idx], actions[idx], None,
-                next_states[idx], dones[idx], old_log_probs[idx], targets[idx]
-            )
-            start_idx += self.batch_size
+                self.states[batch_indices], self.actions[batch_indices],
+                self.rewards[batch_indices], self.next_states[batch_indices],
+                self.dones[batch_indices], self.action_log_probs[batch_indices],
+                returns[batch_indices]
+            )   
+
+            # Drop used batch indices
+            indices = [i for i in indices if i not in batch_indices]            
         # ===== YOUR CODE ENDS HERE =====
 
     def ppo_update(self, states, actions, rewards, next_states, dones, old_log_probs, targets):
@@ -157,45 +151,28 @@ class PPOAgent(BaseAgent):
         # 4. Compute policy objective: min(ratio * adv, clipped_ratio * adv)
         # 5. Compute value loss and entropy
         # 6. Combine total loss and perform optimizer step
-        states = states.to(self.device)
-        actions = actions.to(self.device)
-        old_log_probs = old_log_probs.to(self.device)
-        targets = targets.to(self.device)
 
-        action_dist, values = self.policy.forward(states)
+        action_dist, values = self.policy(states)
         values = values.squeeze()
+        new_action_probs = action_dist.log_prob(actions)
+        ratio = torch.exp(new_action_probs - old_log_probs)
+        clipped_ratio = torch.clamp(ratio, 1 - self.clip, 1 + self.clip)
 
-        new_log_probs = action_dist.log_prob(actions)
-        if new_log_probs.dim() > 1:
-            new_log_probs = new_log_probs.sum(-1)
+        advantages = targets - values
+        advantages -= advantages.mean()
+        advantages /= advantages.std()+1e-8
+        advantages = advantages.detach()
+        policy_objective = -torch.min(ratio*advantages, clipped_ratio*advantages)
 
-        ratio = torch.exp(new_log_probs - old_log_probs)
-        advantages = (targets - values).detach()
-        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+        value_loss = F.smooth_l1_loss(values, targets, reduction="mean")
 
-        surr1 = ratio * advantages
-        surr2 = torch.clamp(ratio, 1.0 - self.clip, 1.0 + self.clip) * advantages
-        policy_loss = -torch.mean(torch.min(surr1, surr2))
+        policy_objective = policy_objective.mean()
+        entropy = action_dist.entropy().mean()
+        loss = policy_objective + 0.5*value_loss - 0.01*entropy
 
-        value_loss = F.mse_loss(values, targets)
-
-        entropy = action_dist.entropy()
-        if entropy.dim() > 1:
-            entropy = entropy.sum(-1)
-        entropy = entropy.mean()
-
-        # Coefficients
-        value_coef = getattr(self.cfg, "value_loss_coef", getattr(self.cfg, "value_coef", 0.5))
-        entropy_coef = getattr(self.cfg, "entropy_coef", getattr(self.cfg, "entropy_coeff", 0.01))
-        max_grad_norm = getattr(self.cfg, "max_grad_norm", 0.5)
-
-        # Total loss and optimization
-        total_loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
         self.optimizer.zero_grad()
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_grad_norm)
+        loss.backward()
         self.optimizer.step()
-
         # ===== YOUR CODE ENDS HERE =====
 
     def get_action(self, observation, evaluation=False):
