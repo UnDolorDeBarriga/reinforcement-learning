@@ -159,8 +159,9 @@ class PPOAgent(BaseAgent):
         clipped_ratio = torch.clamp(ratio, 1 - self.clip, 1 + self.clip)
 
         advantages = targets - values
-        advantages -= advantages.mean()
-        advantages /= advantages.std()+1e-8
+        adv_mean = advantages.mean()
+        adv_std = advantages.std() + 1e-8
+        advantages = (advantages - adv_mean) / adv_std
         advantages = advantages.detach()
         policy_objective = -torch.min(ratio*advantages, clipped_ratio*advantages)
 
